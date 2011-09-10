@@ -1,6 +1,6 @@
 /*
-Copyright (C) 2010 Skrilax_CZ (skrilax@gmail.com)
-Based on work done by Pradeep Padala (p_padala@yahoo.com)
+Copyright (C) 2010-2011 Skrilax_CZ (skrilax@gmail.com)
+Using work done by Pradeep Padala (ptrace functions) (p_padala@yahoo.com)
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -26,30 +26,34 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <stdio.h>
 #include <string.h>
 
+#include "2nd-init.h"
+
 union u 
 {
-	long val;
+	unsigned long val;
 	char chars[sizeof(long)];
 };
 
-void getdata(pid_t child, long addr, char *str, int len)
+/* Get process data */
+void get_data(pid_t child, unsigned long addr, char *str, int len)
 {   
 	char *laddr;
 	int i, j;
 	union u data;
 
 	i = 0;
-	j = len / sizeof(long);
+	j = len / sizeof(unsigned long);
+	
 	laddr = str;
 	while(i < j) 
 	{
 		data.val = ptrace(PTRACE_PEEKDATA, child, (void*)(addr + i * 4), NULL);
-		memcpy(laddr, data.chars, sizeof(long));
+		memcpy(laddr, data.chars, sizeof(unsigned long));
 		++i;
-		laddr += sizeof(long);
+		laddr += sizeof(unsigned long);
 	}
 
-	j = len % sizeof(long);
+	j = len % sizeof(unsigned long);
 	
 	if(j != 0) 
 	{
@@ -60,7 +64,8 @@ void getdata(pid_t child, long addr, char *str, int len)
 	str[len] = '\0';       
 }
 
-void putdata(pid_t child, long addr, char *str, int len)
+/* Put process data */
+void put_data(pid_t child, unsigned long addr, char *str, int len)
 {
 	char *laddr;
 	int i, j;
@@ -68,17 +73,17 @@ void putdata(pid_t child, long addr, char *str, int len)
 	union u data;
 
 	i = 0;
-	j = len / sizeof(long);
+	j = len / sizeof(unsigned long);
 	laddr = str;
 	while(i < j) 
 	{
-		memcpy(data.chars, laddr, sizeof(long));
+		memcpy(data.chars, laddr, sizeof(unsigned long));
 		ptrace(PTRACE_POKEDATA, child, (void*)(addr + i * 4), (void*)(data.val));
 		++i;
-		laddr += sizeof(long);
+		laddr += sizeof(unsigned long);
 	}
 
-	j = len % sizeof(long);
+	j = len % sizeof(unsigned long);
 	if(j != 0) 
 	{
 		memcpy(data.chars, laddr, j);
@@ -86,13 +91,14 @@ void putdata(pid_t child, long addr, char *str, int len)
 	}
 }
 
-long get_free_address(pid_t pid)
+/* Gets first free address */
+unsigned long get_free_address(pid_t pid)
 {
   FILE *fp;
   char filename[30];
   char line[85];
-  long addr;
   char str[20];
+  unsigned long addr;
   sprintf(filename, "/proc/%d/maps", pid);
   fp = fopen(filename, "r");
   
@@ -101,7 +107,7 @@ long get_free_address(pid_t pid)
 		
   while(fgets(line, 85, fp) != NULL) 
   {
-    sscanf(line, "%lx-%*lx %*s %*s %s", &addr, 
+    sscanf(line, "%lx-%*lx %s %s %s", &addr, 
     	str, str, str, str);
     	
 		if(strcmp(str, "00:00") == 0)
@@ -112,7 +118,8 @@ long get_free_address(pid_t pid)
   return addr;
 }
 
-void get_base_image_address(pid_t pid, long* address, long* size)
+/* Gets image base data */
+void get_base_image_data(pid_t pid, unsigned long* address, unsigned long* size)
 {
 	FILE *fp;
   char filename[30];
@@ -122,8 +129,8 @@ void get_base_image_address(pid_t pid, long* address, long* size)
   *address = 0;
 	*size = 0;
   
-  long start_address = 0;
-  long end_address = 0;
+  unsigned long start_address = 0;
+  unsigned long end_address = 0;
   
   sprintf(filename, "/proc/%d/maps", pid);
   fp = fopen(filename, "r");
@@ -133,7 +140,7 @@ void get_base_image_address(pid_t pid, long* address, long* size)
 		
   if(fgets(line, 85, fp) != NULL) 
   {
-    sscanf(line, "%lx-%lx %*s %*s %s", &start_address, 
+    sscanf(line, "%lx-%lx %s %s %s", &start_address, 
     	&end_address, str, str, str);
     	
     *address = start_address;
@@ -143,13 +150,29 @@ void get_base_image_address(pid_t pid, long* address, long* size)
   fclose(fp);
 }
 
+/* Main */
 int main(int argc, char** argv)
 {
 	struct pt_regs regs;
-	char buff[512];
-	char init_env[0x1C0];
 	
-	//read the enviromental variables of the init
+	char buff[512];
+	char init_env[512];
+	char injected_data[1024];
+	char* init_image;
+	char* iter;
+	
+	unsigned long image_base;
+	unsigned long image_size;
+	unsigned long execve_address;
+	unsigned long injected_data_address;
+	unsigned long c,d;
+		
+	unsigned long execve_cur_env_ptr; 
+	unsigned long execve_cur_env; 
+	
+	int found, len;
+	
+	/* Read the enviromental variables of the init */
 	FILE* f = fopen("/proc/1/environ", "r");
 	
 	if (f == 0)
@@ -158,50 +181,32 @@ int main(int argc, char** argv)
 		return 2;
 	}
 	
-	size_t sz = fread(init_env, 1, 0x1C0-1, f);
+	size_t sz = fread(init_env, 1, 511, f);
 	init_env[sz] = 0;
 	fclose(f);
 	
-	//init has pid always 1
+	/* Init has always pid 1. If ptrace attach fails,
+	 * insert a module to dismantle the check for init.
+	 */
 	memset(&regs, 0, sizeof(regs));
 	ptrace(PTRACE_ATTACH, 1, NULL, NULL);
 	
-	//wait for interrupt
+	/* wait for interrupt */
 	wait(NULL);
-
-	ptrace(PTRACE_GETREGS, 1, NULL, &regs);
+		
+	/* Obtain an address */
+	injected_data_address = get_free_address(1);
+	printf("Address for data injection: 0x%08lX.\n", injected_data_address);
 	
-	//structure of init is (static executable!)
-	//0x8000 image base (usually)
-	//0xA0 ELF header size
-	//=>start is on 0x80A0
-	//ARM mode
+	/* Reset */
+	memset(injected_data, 0, sizeof(injected_data));
 	
-	long injected_code_address = get_free_address(1);
-	printf("Address for the injection: 0x%08lX.\n", injected_code_address);
+	/* We want to call:
+	 * execve("/init", { "/init", NULL }, envp);
+	 */
 	
-	//nah the space on heap will be bigger
-	char injected_code[0x400];
-	memset(injected_code, 0, sizeof(injected_code));
-	
-	//supposed to call
-	//execve("/init", { "/init", NULL }, envp);
-	
-	//find execve inside init
-	//===============================================================================
-	//
-	// find it based on these four instructions
-	//
-	// STMFD   SP!, {R4,R7}
-	// MOV     R7, #0xB
-	// SVC     0
-	// LDMFD   SP!, {R4,R7}
-	//
-	// HEX: 90002DE9 0B70A0E3 000000EF 9000BDE8
-	
-	long image_base;
-	long image_size;
-	get_base_image_address(1, &image_base, &image_size);
+  /* Get image data */
+ 	get_base_image_data(1, &image_base, &image_size);
 	
 	if (image_base == 0 || image_size == 0)
 	{
@@ -212,22 +217,16 @@ int main(int argc, char** argv)
 	printf("image_base: 0x%08lX.\n", image_base);
 	printf("image_size: 0x%08lX.\n", image_size);
 	
-	char* init_image = malloc(image_size);
-	getdata(1, image_base, init_image, image_size);
+	init_image = malloc(image_size);
+	get_data(1, image_base, init_image, image_size);
 	
-	//now look for the bytes
-	long c,d;
-	char execve_code[] = {	0x90, 0x00, 0x2D, 0xE9,
-													0x0B, 0x70, 0xA0, 0xE3,
-													0x00, 0x00, 0x00, 0xEF,
-													0x90, 0x00, 0xBD, 0xE8 };
-	
-	long execve_address = 0;
+	/* Search for execve */
+	execve_address = 0;
 	c = 0;
 												
 	while (c < image_size - sizeof(execve_code))
 	{
-		int found = 1;
+		found = 1;
 		
 		for(d = 0; d < sizeof(execve_code); d++)
 		{
@@ -244,7 +243,7 @@ int main(int argc, char** argv)
 			break;
 		}
 		
-		c+=4; //ARM mode
+		c += 4; //ARM mode
 	}
 	
 	if (!execve_address)
@@ -255,95 +254,69 @@ int main(int argc, char** argv)
 	
 	printf("execve located on: 0x%08lX.\n", execve_address);
 	
-	//fill in the instructions
-	//===============================================================================
-	
-	/* LDR R0="/init"
-	 * LDR R1, &args #(args = { "/init", NULL })
-	 * LDR R2, &env #(read em first using /proc)
-	 * BL execve #if there is just branch and it fails, then I dunno what happens next, so branch with link
-	 * some illegal instruction here (let's say zeroes :D)
+	/* Fill in data:
+	 *
+	 * Offset - Description
+	 *
+	 * 0x0000 - char* - argument filename and argp[0] - pointer to "/init" on 0x0100
+	 * 0x0004 - null pointer - argp[1] (set by memset)
+	 * 0x0008 - envp[0] - first enviromental variable (starting on 0x0110)
+	 * 0x000C - envp[1] - second enviromental variable
+	 * 0x0010 - envp[2] - third enviromental variable
+	 * etc. (null pointer behind the last set by memset)
+	 * 0x0100 - "/init"
 	 */
 	
-	//this could be set directly to the current registers
-	//but I find cleaner just using the code
+	/* Write execve arguments */
 	
-	//LDR R0=PC-8+0x100 (HEX=0xE59F00F8); (pointer to "/init")
-	//LDR R1=PC-8+0x108 (HEX=0xE59F10FC); (pointer to { "/init", NULL })
-	//LDR R2=PC-8+0x120 (HEX=0xE59F2110); (pointer to env variables (char**) ) 
-	//BL execve (HEX=0xEB000000 + ((#execve-PC)/4 & 0x00FFFFFF) )
+	/* "/init" goes to 0x100 */
+	strcpy(&(injected_data[0x100]), "/init");
 	
-	//on offset 0x100 create the pointers
-	long instructions[4];
-	instructions[0] = 0xE59F00F8;
-	instructions[1] = 0xE59F10FC;
-	instructions[2] = 0xE59F2110;
-	instructions[3] = 0xEB000000 + 
-		( ((execve_address - (injected_code_address + 0x0C + 8) )/4) & 0x00FFFFFF );
-		
-	//copy them
-	memcpy((void*)injected_code, &instructions[0], sizeof(long) * 4);
-	
-	//fill in the pointers
-	//===============================================================================
-	
-	//map
-	//0x100 - char* - argument filename and argp[0] - pointer to "/init" on 0x200
-	//0x104 - null pointer - argp[1] (set by memset)
-	//0x108 - char** - argument argp - pointer to the pointers on 0x100
-	//0x120 - char** - argument envp - pointer to the pointers on 0x130
-	//0x130 - envp[0] - 
-	//0x134 - envp[1]
-	//0x138 - envp[2]
-	//etc.
-	
-	//write the arguments
-	long execve_arg_filename_target = injected_code_address + 0x200; 
-	long execve_arg_argp_target = injected_code_address + 0x100; 
-	long execve_arg_envp_target = injected_code_address + 0x130; 
-	
-	memcpy(&(injected_code[0x100]), &execve_arg_filename_target, sizeof(long));
-	memcpy(&(injected_code[0x108]), &execve_arg_argp_target, sizeof(long));
-	memcpy(&(injected_code[0x120]), &execve_arg_envp_target, sizeof(long));
-	
-	//fill in the strings and envp
-	//===============================================================================
-	
-	//"/init" goes to 0x200
-	strcpy(&(injected_code[0x200]), "/init");
-	
-	//enviroment variables
-	long current_envp_address_incr = 0x130;
-	char* iter = init_env;
-	int w = 0x220;
+	/* Enviromental variables */
+	execve_cur_env_ptr = injected_data_address + 0x10;
+	execve_cur_env = injected_data_address + 0x110;
+	iter = init_env;
 		
 	while (*iter)
 	{
-		//an env. var is found, write its address and copy it
-		long current_envp_string_address = injected_code_address + w;
+	  /* Write envp */		
+		memcpy(&(injected_data[execve_cur_env_ptr - injected_data_address]), &execve_cur_env, sizeof(unsigned long));
+		execve_cur_env_ptr += sizeof(unsigned long);
 		
-		memcpy(&(injected_code[current_envp_address_incr]), &current_envp_string_address, sizeof(long));
-		current_envp_address_incr += sizeof(long);
-		strcpy(&(injected_code[w]), iter);
-		int len = strlen(iter) + 1;
+		/* Write string */
+		strcpy(&(injected_data[execve_cur_env - injected_data_address]), iter);
+		len = strlen(iter) + 1;
+		
 		iter += len;
-		w += len;
+		execve_cur_env += len;
 		
-		while (w%(sizeof(long)))
-			w++;		
+		if (execve_cur_env % sizeof(unsigned long) != 0)
+		  execve_cur_env += sizeof(unsigned long) - (execve_cur_env % sizeof(unsigned long));	
 	}
 	
-	//terminating null pointer is preset by memset
-				
-	//put the data
-	putdata(1, injected_code_address, injected_code, 1024);
+	/* Put data to the process */
+	put_data(1, injected_data_address, injected_data, sizeof(injected_data));
 	
-	//set the PC
-	regs.ARM_pc = injected_code_address;
-	printf("Setting /init PC to: 0x%08lX.\n", injected_code_address);
+	/* Set registers 
+	 *
+	 * R0 = "/init"
+	 * R1 = #argp
+	 * R2 = #envp
+   * PC = #execve 
+	 */
+	
+	ptrace(PTRACE_GETREGS, 1, NULL, &regs);
+	
+	regs.ARM_r0 = injected_data_address + 0x0100; /* char*  filename */
+	regs.ARM_r1 = injected_data_address + 0x0000; /* char** argp */
+	regs.ARM_r2 = injected_data_address + 0x0008; /* char** envp */
+	regs.ARM_pc = execve_address;
+	
+	printf("Setting /init PC to: 0x%08lX.\n", execve_address);
+	
 	ptrace(PTRACE_SETREGS, 1, NULL, &regs);
-		
-	//fire it
+
+  /* Detach */
 	printf("Detaching...\n");
 	ptrace(PTRACE_DETACH, 1, NULL, NULL);
 	return 0;
