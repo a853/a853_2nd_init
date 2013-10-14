@@ -23,7 +23,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 /*===============================================================================
  * 
- * Signature of calling execve (syscall 11)
+ * Signature of calling execve (syscall 11) (for Android <= 4.2.2)
  *
  * execve:
  *
@@ -40,4 +40,23 @@ char execve_code[] = {	0x90, 0x00, 0x2D, 0xE9,
 												0x00, 0x00, 0x00, 0xEF,
 												0x90, 0x00, 0xBD, 0xE8 };
 												
+/*===============================================================================
+ *
+ * Signature of calling execve (syscall 11) (for Android 4.3)
+ *
+ * execve:
+ *
+ * MOV     IP, R7
+ * LDR     R7, #0xB
+ * SVC     0
+ * MOV     R7, IP
+ *
+ * HEX: 07C0A0E1 0B70A0E3 000000EF 0C70A0E1
+===============================================================================*/
+
+char execve_code_43[] = { 0x07, 0xC0, 0xA0, 0xE1,
+												0x0B, 0x70, 0xA0, 0xE3,
+												0x00, 0x00, 0x00, 0xEF,
+												0x0C, 0x70, 0xA0, 0xE1 };
+
 #endif //!SECOND_INIT_H
