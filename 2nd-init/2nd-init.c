@@ -28,6 +28,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #include "2nd-init.h"
 
+unsigned long find_code(char* image, unsigned long base, unsigned long size, char *code, unsigned long code_size);
+
 union u 
 {
 	unsigned long val;
@@ -150,6 +152,38 @@ void get_base_image_data(pid_t pid, unsigned long* address, unsigned long* size)
   fclose(fp);
 }
 
+/* Search image for matching hex code */
+unsigned long find_code(char* image, unsigned long base, unsigned long size, char *code, unsigned long code_size)
+{
+	unsigned long address = 0;
+	unsigned long c = 0, d = 0;
+	int found = 1;
+
+	while (c < size - code_size)
+	{
+		found = 1;
+
+		for(d = 0; d < code_size; d++)
+		{
+			if (image[c+d] != code[d])
+			{
+				found = 0;
+				break;
+			}
+		}
+
+		if (found)
+		{
+			address = base + c;
+			break;
+		}
+
+		c += 4; //ARM mode
+	}
+	return address;
+}
+
+
 /* Main */
 int main(int argc, char** argv)
 {
@@ -165,12 +199,11 @@ int main(int argc, char** argv)
 	unsigned long image_size;
 	unsigned long execve_address;
 	unsigned long injected_data_address;
-	unsigned long c,d;
 		
 	unsigned long execve_cur_env_ptr; 
 	unsigned long execve_cur_env; 
 	
-	int found, len;
+	int len;
 	
 	/* Read the enviromental variables of the init */
 	FILE* f = fopen("/proc/1/environ", "r");
@@ -221,34 +254,14 @@ int main(int argc, char** argv)
 	get_data(1, image_base, init_image, image_size);
 	
 	/* Search for execve */
-	execve_address = 0;
-	c = 0;
-												
-	while (c < image_size - sizeof(execve_code))
-	{
-		found = 1;
-		
-		for(d = 0; d < sizeof(execve_code); d++)
-		{
-			if (init_image[c+d] != execve_code[d])
-			{
-				found = 0;
-				break;
-			}
-		}
-		
-		if (found)
-		{
-			execve_address = image_base + c; 
-			break;
-		}
-		
-		c += 4; //ARM mode
-	}
-	
+	execve_address = find_code(init_image, image_base, image_size, execve_code, sizeof(execve_code));
 	if (!execve_address)
 	{
-		printf("Failed locating execve.\n");
+		printf("Failed locating execve v4.2.2 code.\n");
+		execve_address = find_code(init_image, image_base, image_size, execve_code_43, sizeof(execve_code_43));
+	}
+	if (!execve_address) {
+		printf("Failed locating execve v4.3 code.\n");
 		return 5;
 	}
 	
